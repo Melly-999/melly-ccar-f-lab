@@ -1,61 +1,53 @@
-# Lab 01 – Architecture Notes
+# Lab 01 – Architecture Notes (updated)
 
 ## High-level flow
 
 1. User sends a query to the Coordinator.
-2. Coordinator analyzes the query and decides which subagents are needed.
-3. Coordinator builds a **minimal context package** for each required subagent.
-4. Subagents run (can be sequential or parallel).
-5. Coordinator receives structured results from each subagent.
-6. Coordinator decides:
-   - Is the task complete? → produce final JSON answer
-   - Do we need another round? → call more agents or the same ones again with new context
-   - Is there a hard failure? → escalate or return error with clear category
+2. Coordinator always starts with the Research agent (minimal context).
+3. Coordinator asks Claude (structured output) what to do next.
+4. Based on the decision it may call Developer and/or Reviewer.
+5. Loop continues up to `max_rounds` or until the decision is `complete` / `failed`.
+6. Always returns a valid `FinalAnswer` (even on total failure).
 
-## Context isolation rules
+## Context isolation rules (exam critical)
 
-| Agent | Receives | Does **not** receive |
-|-------|----------|----------------------|
-| Research | Original query + any previous research findings that are relevant | Full conversation history, developer code, reviewer comments |
-| Developer | Specific files / paths + the exact question about code | Full research dump, unrelated history |
-| Reviewer | The artifacts that need review + clear review criteria | Everything else |
-
-This is one of the most important points the exam tests.
+| Agent     | Receives                                      | Does **not** receive                  |
+|-----------|-----------------------------------------------|---------------------------------------|
+| Research  | Original query + optional previous findings   | Full history, code, reviewer notes    |
+| Developer | Specific coding question + relevant paths     | Full research dump, unrelated history |
+| Reviewer  | Artifacts to review + clear criteria         | Everything else                       |
 
 ## Tool scoping (least privilege)
 
-```python
-RESEARCH_TOOLS = ["web_search", "fetch_url"]
-DEVELOPER_TOOLS = ["read_file", "list_directory", "search_code"]
-REVIEWER_TOOLS = ["analyze_text", "check_consistency"]
-```
+Tools are imported only into the agents that are allowed to use them.
+Even if a prompt tries to make Research edit a file, the runtime simply does not give it that capability.
 
-Even if a prompt tries to make the Research agent edit a file, the runtime simply does not give it that tool.
+## Decision logic (now real Claude call)
 
-## Stop / continue decision
+The method `_decide()` can run in two modes:
 
-The Coordinator uses a simple internal schema:
+- `use_llm_decision=True` (default) → Claude returns a structured `CoordinatorDecision`
+- `use_llm_decision=False` → simple heuristic (useful for unit tests / offline)
 
-```json
-{
-  "status": "complete" | "need_more_info" | "failed",
-  "confidence": 0.0-1.0,
-  "next_actions": ["research", "developer", ...],
-  "reason": "..."
-}
-```
+This is the most important architectural piece for the exam:
+the Coordinator owns the conversation and makes explicit, inspectable decisions.
 
 ## Failure handling
 
-- **Transient** (network, rate limit) → retry with backoff
-- **Permanent** (tool not found, invalid arguments, policy violation) → stop and report
-- **No useful data** → Coordinator must still produce a valid answer (possibly with `requires_human_review: true`)
+- Transient errors → can be retried (future improvement)
+- Permanent / no_data → reported cleanly in `FinalAnswer`
+- Empty useful results → still produces a coherent structured answer
 
-## Why this design scores well on the exam
+## Relation to MCP (for later labs)
 
-- Clear separation of concerns
-- Explicit context isolation
-- Tool scoping enforced at runtime, not only in prompts
-- Structured outputs everywhere
-- Conscious handling of the “empty result” case
-- Easy to extend later with hooks, session persistence, or human escalation
+In a full production system the tools used by Research / Developer / Reviewer
+would typically come from MCP servers instead of the current mock implementations.
+
+MCP gives us:
+- standardized tool discovery (`tools/list`)
+- structured input schemas
+- resources (read-only data)
+- prompts / skills (new in 2026)
+- Tasks & Elicitation for long-running work
+
+See `notes/mcp-overview.md` for a short summary of the current MCP landscape.
